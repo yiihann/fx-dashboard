@@ -1,0 +1,29 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# Hidden system files
+.DS_Store
+
+# Model files
+*.keras
+*.h5
+*.pkl
+*.joblib
+
+# Data (optional: if you don’t want to commit them)
+data/
+model/*/*.csv
+
+# Logs and cache
+*.log
+.cache/

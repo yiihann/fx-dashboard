@@ -1,0 +1,14 @@
+# Core dependencies
+streamlit
+pandas
+numpy
+
+# Visualization
+matplotlib
+plotly
+
+# Machine Learning & Preprocessing
+scikit-learn
+tensorflow
+keras
+joblib
