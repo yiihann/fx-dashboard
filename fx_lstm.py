@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from keras.utils import plot_model
 
 # ---------- SETTINGS ----------
-CURRENCY = "GBP"  # change this to GBP or JPY to run separately
+CURRENCY = "JPY"  # change this to GBP or JPY to run separately
 TIME_STEP = 10
 EPOCHS = 50
 SAVE_DIR = f"./model/{CURRENCY}"

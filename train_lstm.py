@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from keras.utils import plot_model
 
 # ---------- SETTINGS ----------
-CURRENCY = "GBP"  # change this to GBP or JPY to run separately
+CURRENCY = "JPY"  # change this to GBP or JPY to run separately
 CUTOFF_DATE = "2022-12-21"
 PRED_END_DATE = "2025-02-01"
 TIME_STEP = 10
@@ -64,9 +64,9 @@ X_test = X_test.reshape(X_test.shape[0], TIME_STEP, X_test.shape[2])
 
 # ---------- BUILD MODEL ----------
 model = Sequential()
-model.add(LSTM(50, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])))
+model.add(LSTM(100, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])))
 model.add(Dropout(0.2))
-model.add(LSTM(50))
+model.add(LSTM(100))
 model.add(Dropout(0.2))
 model.add(Dense(1))
 
@@ -142,9 +142,9 @@ X_full, y_full = create_dataset(full_scaled, TIME_STEP)
 X_full = X_full.reshape(X_full.shape[0], TIME_STEP, X_full.shape[2])
 
 final_model = Sequential()
-final_model.add(LSTM(50, return_sequences=True, input_shape=(X_full.shape[1], X_full.shape[2])))
+final_model.add(LSTM(100, return_sequences=True, input_shape=(X_full.shape[1], X_full.shape[2])))
 final_model.add(Dropout(0.2))
-final_model.add(LSTM(50))
+final_model.add(LSTM(100))
 final_model.add(Dropout(0.2))
 final_model.add(Dense(1))
 final_model.compile(optimizer='adam', loss='mse')
