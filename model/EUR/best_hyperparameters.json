@@ -1,0 +1,13 @@
+{
+    "filters": 64,
+    "kernel_size": 5,
+    "lstm_units": 32,
+    "dropout_1": 0.2,
+    "lstm2_units": 32,
+    "dropout_2": 0.4,
+    "optimizer": "adam",
+    "tuner/epochs": 20,
+    "tuner/initial_epoch": 0,
+    "tuner/bracket": 0,
+    "tuner/round": 0
+}

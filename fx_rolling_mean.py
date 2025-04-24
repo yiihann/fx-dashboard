@@ -39,11 +39,13 @@ def plot_rolling_mean_chart(data: pd.DataFrame, currency: str, window: int, show
     fig = go.Figure()
     if show_raw:
         fig.add_trace(go.Scatter(x=filtered.index, y=filtered, name="Daily Return", line=dict(color="skyblue")))
-
+        y_top = filtered.max()
+    else:
+        y_top = rolling_filtered.max()
     fig.add_trace(go.Scatter(x=rolling_filtered.index, y=rolling_filtered, name=f"Rolling Mean ({window}d)", line=dict(color="salmon")))
 
     # Annotate
-    y_top = filtered.max()
+    # y_top = filtered.max()
     y_annot = y_top * 0.95
     for date, label in ANNOTATIONS[currency].items():
         date_obj = pd.to_datetime(date)

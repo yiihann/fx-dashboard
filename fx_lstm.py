@@ -1,99 +1,112 @@
 import pandas as pd
 import numpy as np
-from keras.models import Sequential, load_model
-from keras.layers import LSTM, Dense, Dropout
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from sklearn.model_selection import train_test_split
+from keras.models import load_model
+from sklearn.preprocessing import StandardScaler
 import joblib
 import os
-import matplotlib.pyplot as plt
-from keras.utils import plot_model
+import sys
 
-# ---------- SETTINGS ----------
-CURRENCY = "JPY"  # change this to GBP or JPY to run separately
-TIME_STEP = 10
-EPOCHS = 50
-SAVE_DIR = f"./model/{CURRENCY}"
-os.makedirs(SAVE_DIR, exist_ok=True)
-
-# ---------- LOAD DATA ----------
-df = pd.read_csv("./data/returns_2014_2025_filtered.csv", parse_dates=["Date"])
-df = df.set_index("Date")
-
-# ---------- FEATURE ENGINEERING ----------
 def compute_rsi(series, window=10):
-    delta = series.diff(1)
+    delta = series.diff()
     gain = delta.where(delta > 0, 0).rolling(window).mean()
     loss = -delta.where(delta < 0, 0).rolling(window).mean()
     rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+    return 100 - (100 / (1 + rs))
 
-def predict_future_returns(df, currency, final_model_path, scaler_path, save_path, future_days=30, time_step=10):
-    # Load model and scaler
+def predict_future_returns(df, currency, final_model_path, scaler_path, target_scaler_path, save_path, future_days=30, time_step=20):
     model = load_model(final_model_path)
     scaler = joblib.load(scaler_path)
+    target_scaler = joblib.load(target_scaler_path)
 
-    # Prepare input features
-    features = ["MA", "RSI", currency]
     df = df[[currency]].copy()
-    df["MA"] = df[currency].rolling(5).mean()
-    df["RSI"] = compute_rsi(df[currency])
+    df["MA_5"] = df[currency].rolling(5).mean()
+    df["MA_10"] = df[currency].rolling(10).mean()
+    df["RSI"] = compute_rsi(df[currency]).rolling(3).mean()
+    df["Momentum_5"] = df[currency] - df[currency].shift(5)
+    df["Momentum_10"] = df[currency] - df[currency].shift(10)
+    df["Volatility_5"] = df[currency].rolling(5).std()
+    df["Volatility_10"] = df[currency].rolling(10).std()
+    df["target"] = df[currency].shift(-1).rolling(5).mean()
+    df["lag_target_1"] = df["target"].shift(1)
+    df["lag_target_2"] = df["target"].shift(2)
+    df["lag_target_3"] = df["target"].shift(3)
+    df["lag_target_5"] = df["target"].shift(5)
+    df["lag_target_7"] = df["target"].shift(7)
+    df["MA_diff"] = df["MA_5"] - df["MA_10"]
+    df["Z_Score"] = (df[currency] - df[currency].rolling(20).mean()) / df[currency].rolling(20).std()
     df.dropna(inplace=True)
 
-    # Use the last TIME_STEP rows to start
-    recent_df = df[-time_step:].copy()
-    print(recent_df)
+    features = [
+        "MA_5", "MA_10", "RSI",
+        "Momentum_5", "Momentum_10",
+        "Volatility_5", "Volatility_10",
+        "lag_target_1", "lag_target_2", "lag_target_3", "lag_target_5", "lag_target_7",
+        "MA_diff", "Z_Score"
+    ]
+
+    # Scale the entire feature set using DataFrame
+    df_scaled = pd.DataFrame(
+        scaler.transform(df[features]),
+        columns=features,
+        index=df.index
+    )
+
+    recent_df = df_scaled[-time_step:].copy()
+    original_df = df[-time_step:].copy()  # to fetch most recent original values
     future_preds = []
-    predicted_series = list(recent_df[currency])
+    predicted_series = list(df["target"].iloc[-time_step:].values)
 
     for _ in range(future_days):
-        # Recalculate MA and RSI for recent predicted series
         temp_series = pd.Series(predicted_series)
-        ma = temp_series.rolling(5).mean().iloc[-1]
-        rsi = compute_rsi(temp_series).iloc[-1]
+        lag_1 = temp_series.shift(1).iloc[-1]
+        lag_2 = temp_series.shift(2).iloc[-1]
+        lag_3 = temp_series.shift(3).iloc[-1]
+        lag_5 = temp_series.shift(5).iloc[-1]
+        lag_7 = temp_series.shift(7).iloc[-1]
+        
+        last_original = original_df.iloc[-1][["MA_5", "MA_10", "RSI", "Momentum_5", "Momentum_10", "Volatility_5", "Volatility_10", "MA_diff", "Z_Score"]].tolist()
+        temp_input = last_original + [lag_1, lag_2, lag_3, lag_5, lag_7]
 
-        # Prepare input row
-        last_input = np.array([[ma, rsi, predicted_series[-1]]])
-        scaled_input = scaler.transform(last_input)
+        input_df = pd.DataFrame([temp_input], columns=features)
+        input_scaled = pd.DataFrame(scaler.transform(input_df), columns=features)
 
-        # Build input sequence
-        recent_scaled = scaler.transform(recent_df[features])
-        sequence = np.vstack([recent_scaled[1:], scaled_input])  # slide forward
-        sequence = sequence.reshape(1, time_step, 3)
+        sequence = pd.concat([recent_df.iloc[1:], input_scaled], ignore_index=True)
+        sequence_array = sequence.to_numpy().reshape(1, time_step, len(features))
 
-        # Predict next return
-        pred_scaled = model.predict(sequence)[0, 0]
-        template = np.zeros((1, 3))
-        template[0, 0] = pred_scaled
-        pred_real = scaler.inverse_transform(template)[0, 0]
+        pred_scaled = model.predict(sequence_array)[0, 0]
+        pred_real = target_scaler.inverse_transform([[pred_scaled]])[0, 0]
         future_preds.append(pred_real)
 
-        # Update context
-        predicted_series.append(pred_real)
-        new_row = pd.DataFrame([[ma, rsi, pred_real]], columns=features, index=[df.index[-1] + pd.Timedelta(days=len(future_preds))])
+        new_row = input_scaled.copy()
+        new_row.index = [df.index[-1] + pd.Timedelta(days=len(future_preds))]
         recent_df = pd.concat([recent_df, new_row])[-time_step:]
+        predicted_series.append(pred_scaled)
 
-    # Build result DataFrame
     start_date = df.index[-1] + pd.Timedelta(days=1)
     future_dates = pd.date_range(start=start_date, periods=future_days)
     future_df = pd.DataFrame({"Date": future_dates, "Predicted Return": future_preds})
 
-    # Save to CSV
     future_df.to_csv(save_path, index=False)
-
     return future_df
 
-# Predict future returns
-final_model_path=f"./model/{CURRENCY}/lstm_final_model.keras"
-scaler_path=f"./model/{CURRENCY}/final_scaler.pkl"
-save_path=f"./model/{CURRENCY}/future_returns.csv"
-
-future_df = predict_future_returns(
-    df,
-    currency=CURRENCY,
-    final_model_path=final_model_path,
-    scaler_path=scaler_path,
-    save_path=save_path
-)
+if __name__ == "__main__":
+    CURRENCY = sys.argv[1] if len(sys.argv) > 1 else "EUR"
+    CUTOFF_DATE = "2022-12-21"
+    PRED_END_DATE = "2025-02-01"
+    SAVE_DIR = f"./model/{CURRENCY}"
+    TIME_STEP = 20
+    EPOCHS = 100
+    BATCH_SIZE = 32
+    
+    df_all = pd.read_csv("./data/returns_2014_2025_filtered.csv", parse_dates=["Date"])
+    df_all = df_all.set_index("Date")
+    df = df_all[[CURRENCY]].copy()
+    
+    predict_future_returns(
+        df=df,
+        currency=CURRENCY,
+        final_model_path=f"{SAVE_DIR}/lstm_final_model.keras",
+        scaler_path=f"{SAVE_DIR}/final_scaler.pkl",
+        target_scaler_path=f"{SAVE_DIR}/target_scaler.pkl",
+        save_path=f"{SAVE_DIR}/future_returns.csv"
+    )

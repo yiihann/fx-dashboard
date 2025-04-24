@@ -1,155 +1,149 @@
 import pandas as pd
 import numpy as np
 from keras.models import Sequential
-from keras.layers import LSTM, Dense, Dropout
-from sklearn.preprocessing import MinMaxScaler
+from keras.layers import LSTM, Dense, Dropout, Bidirectional, Conv1D, MaxPooling1D
+from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.model_selection import train_test_split
 import joblib
 import os
 import matplotlib.pyplot as plt
 from keras.utils import plot_model
+from keras.callbacks import EarlyStopping
+from keras import Input
+from keras.losses import Huber
 
-# ---------- SETTINGS ----------
-CURRENCY = "JPY"  # change this to GBP or JPY to run separately
-CUTOFF_DATE = "2022-12-21"
-PRED_END_DATE = "2025-02-01"
-TIME_STEP = 10
-EPOCHS = 50
-SAVE_DIR = f"./model/{CURRENCY}"
-os.makedirs(SAVE_DIR, exist_ok=True)
 
-# ---------- LOAD DATA ----------
-df = pd.read_csv("./data/returns_2014_2025_filtered.csv", parse_dates=["Date"])
-df = df.set_index("Date")
-df = df[[CURRENCY]].copy()
-
-# ---------- FEATURE ENGINEERING ----------
 def compute_rsi(series, window=10):
     delta = series.diff(1)
     gain = delta.where(delta > 0, 0).rolling(window).mean()
     loss = -delta.where(delta < 0, 0).rolling(window).mean()
     rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+    return 100 - (100 / (1 + rs))
 
-df["MA"] = df[CURRENCY].rolling(5).mean()
-df["RSI"] = compute_rsi(df[CURRENCY])
-df.dropna(inplace=True)
-
-# ---------- TRAIN/TEST SPLIT FOR PERFORMANCE VISUALIZATION ----------
-train = df[df.index < CUTOFF_DATE]
-test = df[(df.index >= CUTOFF_DATE) & (df.index <= PRED_END_DATE)]
-
-# ---------- SCALE FEATURES ----------
-features = ["MA", "RSI", CURRENCY]
-scaler = MinMaxScaler()
-train_scaled = scaler.fit_transform(train[features])
-test_scaled = scaler.transform(test[features])
-
-# ---------- BUILD SEQUENCES ----------
-def create_dataset(data, time_step):
+def create_dataset(data, target, time_step):
     X, y = [], []
-    for i in range(len(data) - time_step - 1):
-        X.append(data[i:i+time_step])
-        y.append(data[i+time_step, 0])
+    for i in range(len(data) - time_step):
+        X.append(data[i:i + time_step])
+        y.append(target[i + time_step])
     return np.array(X), np.array(y)
 
-X_train, y_train = create_dataset(train_scaled, TIME_STEP)
-X_test, y_test = create_dataset(test_scaled, TIME_STEP)
+def train_lstm_model(df, currency, cutoff_date, pred_end_date, time_step, epochs, batch_size, save_dir):
+    os.makedirs(save_dir, exist_ok=True)
 
-# ---------- RESHAPE ----------
-X_train = X_train.reshape(X_train.shape[0], TIME_STEP, X_train.shape[2])
-X_test = X_test.reshape(X_test.shape[0], TIME_STEP, X_test.shape[2])
+    df = df[[currency]].copy()
+    df["MA_5"] = df[currency].rolling(5).mean()
+    df["MA_10"] = df[currency].rolling(10).mean()
+    df["RSI"] = compute_rsi(df[currency]).rolling(3).mean()
+    df["Momentum_5"] = df[currency] - df[currency].shift(5)
+    df["Momentum_10"] = df[currency] - df[currency].shift(10)
+    df["Volatility_5"] = df[currency].rolling(5).std()
+    df["Volatility_10"] = df[currency].rolling(10).std()
+    df["target"] = df[currency].shift(-1).rolling(5).mean()
+    # Lagged target features
+    for lag in [1, 2, 3, 5, 7]:
+        df[f"lag_target_{lag}"] = df["target"].shift(lag)
+    # Mean diff and Z-score
+    mean_20 = df[currency].rolling(20).mean()
+    std_20 = df[currency].rolling(20).std()
+    df["MA_diff"] = df["MA_5"] - df["MA_10"]
+    df["Z_Score"] = (df[currency] - mean_20) / std_20
+    
+    target_scaler = StandardScaler()
+    df["target_scaled"] = target_scaler.fit_transform(df["target"].values.reshape(-1, 1)).flatten()
+    df.dropna(inplace=True)
 
-# ---------- BUILD MODEL ----------
-model = Sequential()
-model.add(LSTM(100, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])))
-model.add(Dropout(0.2))
-model.add(LSTM(100))
-model.add(Dropout(0.2))
-model.add(Dense(1))
+    features = [
+        "MA_5", "MA_10", "RSI",
+        "Momentum_5", "Momentum_10",
+        "Volatility_5", "Volatility_10",
+        "lag_target_1", "lag_target_2",
+        "lag_target_3", "lag_target_5", "lag_target_7",
+        "MA_diff", "Z_Score"
+    ]
 
-# ---------- Split training into train and validation ----------
-from sklearn.model_selection import train_test_split
+    X_full = df[features].values
+    y_full = df["target_scaled"].values
 
-X_train_final, X_val, y_train_final, y_val = train_test_split(
-    X_train, y_train, test_size=0.2, shuffle=False  # no shuffle for time series
-)
+    scaler = StandardScaler()
+    X_full_scaled = scaler.fit_transform(X_full)
 
-# ---------- COMPILE AND TRAIN ----------
-model.compile(optimizer='adam', loss='mse')
-history = model.fit(
-    X_train_final, y_train_final,
-    epochs=EPOCHS,
-    batch_size=16,
-    verbose=1,
-    validation_data=(X_val, y_val)
-)
+    X_train_scaled = X_full_scaled[df.index < cutoff_date]
+    y_train = y_full[df.index < cutoff_date]
+    X_test_scaled = X_full_scaled[(df.index >= cutoff_date) & (df.index <= pred_end_date)]
+    y_test = y_full[(df.index >= cutoff_date) & (df.index <= pred_end_date)]
 
-# ---------- PLOT LOSS HISTORY ----------
-plt.figure(figsize=(8, 4),dpi=200)
-plt.plot(history.history['loss'], label='Training Loss')
-plt.plot(history.history['val_loss'], label='Validation Loss')
-plt.xlabel('Epoch')
-plt.ylabel('Loss')
-plt.title(f'Loss History_{CURRENCY}')
-plt.legend()
-plt.savefig(f"{SAVE_DIR}/loss_history.png")
-# plt.show()
+    X_seq, y_seq = create_dataset(X_full_scaled, y_full, time_step)
+    X_train = X_seq[df.index[time_step:] < cutoff_date]
+    y_train = y_seq[df.index[time_step:] < cutoff_date]
+    X_test = X_seq[(df.index[time_step:] >= cutoff_date) & (df.index[time_step:] <= pred_end_date)]
+    y_test = y_seq[(df.index[time_step:] >= cutoff_date) & (df.index[time_step:] <= pred_end_date)]
 
-# ---------- SAVE MODEL STRUCTURE PLOT ----------
-plot_model(model, show_shapes=True, show_layer_names=True, to_file=f'{SAVE_DIR}/model.png')
+    model = Sequential()
+    model.add(Input(shape=(time_step, X_train.shape[2])))
+    model.add(Conv1D(filters=32, kernel_size=5, activation='relu'))
+    model.add(MaxPooling1D(pool_size=2))
+    model.add(Bidirectional(LSTM(64, return_sequences=True)))
+    model.add(Dropout(0.2))
+    model.add(LSTM(64))
+    model.add(Dropout(0.4))
+    model.add(Dense(1))
+    model.compile(optimizer='adam', loss=Huber(delta=1.0))
 
-# ---------- PREDICT ----------
-pred_scaled = model.predict(X_test)
 
-# ---------- INVERSE TRANSFORM ----------
-pred_template = np.zeros((len(pred_scaled), 3))
-pred_template[:, 0] = pred_scaled.flatten()
-predicted_returns = scaler.inverse_transform(pred_template)[:, 0]
+    early_stop = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+    X_train_final, X_val, y_train_final, y_val = train_test_split(X_train, y_train, test_size=0.2, shuffle=False)
+    history = model.fit(
+        X_train_final, y_train_final,
+        epochs=epochs,
+        batch_size=batch_size,
+        validation_data=(X_val, y_val),
+        callbacks=[early_stop],
+        verbose=1
+    )
 
-actual_template = np.zeros((len(y_test), 3))
-actual_template[:, 0] = y_test
-actual_returns = scaler.inverse_transform(actual_template)[:, 0]
+    y_pred = model.predict(X_test)
+    y_pred_inv = target_scaler.inverse_transform(y_pred)
+    y_test_inv = target_scaler.inverse_transform(y_test.reshape(-1, 1))
 
-# ---------- EVALUATION ----------
-rmse = np.sqrt(mean_squared_error(actual_returns, predicted_returns))
-mae = mean_absolute_error(actual_returns, predicted_returns)
-r2 = r2_score(actual_returns, predicted_returns)
+    rmse = np.sqrt(mean_squared_error(y_test_inv, y_pred_inv))
+    mae = mean_absolute_error(y_test_inv, y_pred_inv)
+    r2 = r2_score(y_test_inv, y_pred_inv)
 
-print(f"{CURRENCY} — RMSE: {rmse:.4f}, MAE: {mae:.4f}, R2: {r2:.4f}")
+    print(f"{currency} — RMSE: {rmse:.4f}, MAE: {mae:.4f}, R2: {r2:.4f}")
 
-# ---------- SAVE MODEL & RESULTS ----------
-model.save(f"{SAVE_DIR}/lstm_model.keras")
-joblib.dump(scaler, f"{SAVE_DIR}/scaler.pkl")
+    model.save(f"{save_dir}/lstm_model.keras")
+    joblib.dump(scaler, f"{save_dir}/scaler.pkl")
 
-results_df = pd.DataFrame({
-    "Date": test.index[TIME_STEP+1:],
-    "Currency": CURRENCY,
-    "Actual": actual_returns,
-    "Predicted": predicted_returns,
-    "RMSE": rmse,
-    "MAE": mae,
-    "R2": r2
-})
-results_df.to_csv(f"{SAVE_DIR}/lstm_predictions.csv", index=False)
+    n = len(y_test)
+    test_dates = df[(df.index >= cutoff_date) & (df.index <= pred_end_date)].index
+    date_index = test_dates[-n:]
 
-# ---------- FINAL MODEL TRAINING FOR FUTURE PREDICTION ----------
-# Retrain on all available data
-full_scaled = scaler.fit_transform(df[features])
-X_full, y_full = create_dataset(full_scaled, TIME_STEP)
-X_full = X_full.reshape(X_full.shape[0], TIME_STEP, X_full.shape[2])
+    results_df = pd.DataFrame({
+        "Date": date_index,
+        "Currency": [currency] * n,
+        "Actual": y_test_inv.flatten(),
+        "Predicted": y_pred_inv.flatten(),
+        "RMSE": [rmse] * n,
+        "MAE": [mae] * n,
+        "R2": [r2] * n
+    })
+    results_df.to_csv(f"{save_dir}/lstm_predictions.csv", index=False)
 
-final_model = Sequential()
-final_model.add(LSTM(100, return_sequences=True, input_shape=(X_full.shape[1], X_full.shape[2])))
-final_model.add(Dropout(0.2))
-final_model.add(LSTM(100))
-final_model.add(Dropout(0.2))
-final_model.add(Dense(1))
-final_model.compile(optimizer='adam', loss='mse')
-final_model.fit(X_full, y_full, epochs=EPOCHS, batch_size=16, verbose=1)
+    plot_model(model, show_shapes=True, show_layer_names=True, to_file=f"{save_dir}/model.png")
 
-# Save final model and scaler
-final_model.save(f"{SAVE_DIR}/lstm_final_model.keras")
-joblib.dump(scaler, f"{SAVE_DIR}/final_scaler.pkl")
+    X_full_seq, y_full_seq = create_dataset(X_full_scaled, y_full, time_step)
+    X_full_seq = X_full_seq.reshape(X_full_seq.shape[0], time_step, X_full_seq.shape[2])
+
+    final_model = Sequential()
+    final_model.add(Input(shape=(X_full_seq.shape[1], X_full_seq.shape[2])))
+    final_model.add(LSTM(64, return_sequences=False))
+    # final_model.add(LSTM(64, return_sequences=False, input_shape=(X_full_seq.shape[1], X_full_seq.shape[2])))
+    final_model.add(Dropout(0.2))
+    final_model.add(Dense(1))
+    final_model.compile(optimizer='adam', loss='mse')
+    final_model.fit(X_full_seq, y_full_seq, epochs=epochs, batch_size=batch_size, verbose=1)
+
+    final_model.save(f"{save_dir}/lstm_final_model.keras")
+    joblib.dump(scaler, f"{save_dir}/final_scaler.pkl")
+    joblib.dump(target_scaler, f"{save_dir}/target_scaler.pkl")

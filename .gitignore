@@ -22,7 +22,6 @@ venv/
 
 # Data (optional: if you don’t want to commit them)
 data/
-model/*/*.csv
 
 # Logs and cache
 *.log
