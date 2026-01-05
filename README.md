@@ -2,7 +2,6 @@
 
 This is a Streamlit-powered interactive dashboard for predicting and analyzing global FX return trends using an LSTM model.
 
----
 
 ## 🔮 Features
 
@@ -11,7 +10,6 @@ This is a Streamlit-powered interactive dashboard for predicting and analyzing g
 - Forecast future FX returns (up to 30 days)
 - Currency support: EUR, GBP, JPY
 
----
 
 ## 🛠️ How to Run Locally
 
@@ -31,7 +29,6 @@ pip install -r requirements.txt
 streamlit run fx_dashboard.py
 ```
 
----
 
 ## 🌐 Deployment
 Deployed on Streamlit Community Cloud.
